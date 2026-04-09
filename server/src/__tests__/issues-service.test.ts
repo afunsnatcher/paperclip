@@ -8,6 +8,7 @@ import {
   companies,
   createDb,
   executionWorkspaces,
+  heartbeatRuns,
   instanceSettings,
   issueComments,
   issueInboxArchives,
@@ -1134,6 +1135,117 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       id: parentId,
       assigneeAgentId,
       childIssueIds: [childA, childB],
+    });
+  });
+});
+
+describeEmbeddedPostgres("issueService.release execution lock lifecycle", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-release-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(heartbeatRuns);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("preserves assignee ownership while clearing execution fields on release", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "manual",
+      triggerDetail: "test",
+      contextSnapshot: { issueId },
+      startedAt: new Date("2026-04-09T12:00:00.000Z"),
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Locked issue",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: runId,
+      executionRunId: runId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date("2026-04-09T12:00:00.000Z"),
+      startedAt: new Date("2026-04-09T12:00:00.000Z"),
+    });
+
+    const released = await svc.release(issueId, agentId, runId);
+
+    expect(released).toMatchObject({
+      id: issueId,
+      status: "todo",
+      assigneeAgentId: agentId,
+      checkoutRunId: null,
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+    });
+
+    const persisted = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(persisted).toMatchObject({
+      id: issueId,
+      status: "todo",
+      assigneeAgentId: agentId,
+      checkoutRunId: null,
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
     });
   });
 });

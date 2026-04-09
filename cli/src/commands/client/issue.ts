@@ -364,7 +364,7 @@ export function registerIssueCommands(program: Command): void {
   addCommonClientOptions(
     issue
       .command("release")
-      .description("Release issue back to todo and clear assignee")
+      .description("Release issue back to todo and clear checkout/execution locks")
       .argument("<issueId>", "Issue ID")
       .action(async (issueId: string, opts: BaseClientOptions) => {
         try {
